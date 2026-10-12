@@ -12,6 +12,10 @@ final class BluetoothCentralManager: NSObject, ObservableObject, @preconcurrency
     @Published var events: [BLEEvent] = []
     @Published var bluetoothState = "蓝牙初始化"
     @Published var status = "未连接"
+    @Published var activeDeviceID: UUID?
+    @Published var activeDeviceName: String?
+    @Published var disconnecting = false
+    @Published var recordedEventCount = 0
     @Published var scanning = false
     @Published var diagnostic = DiagnosticMachine()
     @Published var recording = false
@@ -34,7 +38,8 @@ final class BluetoothCentralManager: NSObject, ObservableObject, @preconcurrency
     private var operationTimer: Timer?
     private var chars: [String: CBCharacteristic] = [:]
     private var favoriteIDs: Set<UUID> = []
-    private var autoDiagnostic = false
+    @Published private(set) var autoDiagnostic = false
+    private var pendingRecordedEvents = 0
     private var scanTimer: Timer?
     private var connectionTimer: Timer?
     private var rssiTimer: Timer?
@@ -96,6 +101,7 @@ final class BluetoothCentralManager: NSObject, ObservableObject, @preconcurrency
             }
             pendingValues.removeAll(keepingCapacity:true); services = topology
         }
+        recordedEventCount += pendingRecordedEvents; pendingRecordedEvents = 0
         events.append(contentsOf:eventBuffer); eventBuffer.removeAll(keepingCapacity:true)
         if events.count > 500 { events.removeFirst(events.count-500) }
     }
@@ -106,13 +112,13 @@ final class BluetoothCentralManager: NSObject, ObservableObject, @preconcurrency
         var event = BLEEvent(sessionID:current?.id ?? UUID(),peripheralIdentifier:p?.identifier.uuidString,deviceName:p?.name,serviceUUID:service,characteristicUUID:characteristic,eventType:type,direction:outbound ? "outbound" : inbound ? "inbound" : "system",payload:data,detail:detail,errorDescription:error?.localizedDescription)
         event.characteristicInstanceID = instanceID; event.notificationEnabled = notifying
         eventBuffer.append(event); if eventBuffer.count > 500 { eventBuffer.removeFirst() }; dirtyUI = true
-        if recording && !paused { store.append(event) }
+        if recording && !paused { pendingRecordedEvents += 1; store.append(event) }
         if let error { errorMessage = error.localizedDescription }
     }
     func startRecording() {
         guard !recording else { if paused { pauseRecording() }; return }
         let record = SessionRecord(id:UUID(),started:Date(),note:note,device:devices.first { $0.id == active?.identifier },topology:services)
-        current = record; recording = true; paused = false; store.save(record); log("session_started")
+        current = record; pendingRecordedEvents = 0; recordedEventCount = 0; recording = true; paused = false; store.save(record); log("session_started")
     }
     func pauseRecording() { guard recording else { return }; if paused { paused = false; log("session_resumed") } else { log("session_paused"); paused = true } }
     func mark() { log("marker",note); if var r = current, r.ended == nil { r.note = note; current = r; store.save(r) } }
@@ -136,14 +142,47 @@ final class BluetoothCentralManager: NSObject, ObservableObject, @preconcurrency
         devicePersistTimer = mainTimer(interval:2,repeats:true) { [weak self] in self?.persistDevices() }
     }
     func stopScan() { let wasScanning = scanning; central.stopScan(); scanning = false; if wasScanning { log("scan_stopped") }; scanTimer?.invalidate(); devicePersistTimer?.invalidate(); persistDevices() }
-    func connect(_ device:Device, automatic:Bool) {
-        guard central.state == .poweredOn else { errorMessage = "蓝牙尚未就绪"; return }
-        guard active == nil else { errorMessage = "已有连接或连接请求，请先断开"; return }
-        guard device.advertisement.connectable != false else { errorMessage = "广播标记为不可连接"; return }
-        guard let p = peripherals[device.id] ?? central.retrievePeripherals(withIdentifiers:[device.id]).first else { errorMessage = "历史设备暂不可用，请重新扫描"; return }
+    @discardableResult
+    func connect(_ device:Device, automatic:Bool) -> Bool {
+        guard central.state == .poweredOn else { errorMessage = "蓝牙尚未就绪"; return false }
+        if let p = active, p.state == .disconnected, !disconnecting, [.idle, .failed, .stopped].contains(diagnostic.state) {
+            active = nil; activeDeviceID = nil; activeDeviceName = nil
+        }
+        let disposition = ConnectionRequestPolicy.evaluate(requested:device.id,active:activeDeviceID,disconnecting:disconnecting)
+        switch disposition {
+        case .disconnecting: errorMessage = "正在断开连接，请稍候完成后再开始"; return false
+        case .switchRequired: errorMessage = "当前正在连接 \(activeDeviceName ?? "另一台设备")，请在 Inspector 停止并断开后切换"; return false
+        case .showExisting:
+            if automatic { enableAutomaticDiagnostic() }
+            return true
+        case .start: break
+        }
+        guard device.advertisement.connectable != false else { errorMessage = "广播标记为不可连接"; return false }
+        guard let p = peripherals[device.id] ?? central.retrievePeripherals(withIdentifiers:[device.id]).first else { errorMessage = "历史设备暂不可用，请重新扫描"; return false }
         autoDiagnostic = automatic; reconnectAttempts = 0; allowReconnect = true; userStopped = false; services = []; chars = [:]; rssiSamples = []; pending = []
-        active = p; p.delegate = self; stopScan(); diagnostic.start(); status = "正在连接 \(device.name)"
+        active = p; activeDeviceID = device.id; activeDeviceName = device.name; disconnecting = false
+        p.delegate = self; stopScan(); diagnostic.start(); status = "正在连接 \(device.name)"
         if automatic { startRecording() }; log("connect_attempt"); central.connect(p,options:nil); armTimeout(seconds:15)
+        return true
+    }
+    private func enableAutomaticDiagnostic() {
+        let wasAutomatic = autoDiagnostic; autoDiagnostic = true; startRecording()
+        guard !wasAutomatic, diagnostic.state == .collecting else { return }
+        for characteristic in services.flatMap(\.characteristics) {
+            for action in ReadOnlyDiagnosticPlanner.operations(for:characteristic,subscribe:autoSubscribe) {
+                switch action {
+                case .read(let id): enqueue(id,nil)
+                case .subscribe(let id): if !characteristic.notifying { enqueue(id,true) }
+                }
+            }
+        }
+        log("diagnostic_started","在已有连接上开始只读自动诊断")
+    }
+    func exportCurrent(format: ExportFormat, privacy: PrivacyOptions) async throws -> URL {
+        guard current != nil else { throw NSError(domain:"Capture",code:1,userInfo:[NSLocalizedDescriptionKey:"请先开始录制，再导出日志或诊断结果"]) }
+        let record = recording ? snapshot() : current!
+        store.save(record)
+        return try await store.export(record,format:format,privacy:privacy)
     }
     private func armTimeout(seconds:Double) {
         connectionTimer?.invalidate(); connectionTimer = mainTimer(interval:seconds,repeats:false) { [weak self] in
@@ -152,7 +191,7 @@ final class BluetoothCentralManager: NSObject, ObservableObject, @preconcurrency
     }
     func disconnect() {
         allowReconnect = false; userStopped = true; autoDiagnostic = false; operationQueue = []; currentOperation = nil; operationTimer?.invalidate(); stopScan(); connectionTimer?.invalidate(); rssiTimer?.invalidate(); pending = []
-        if let p = active { central.cancelPeripheralConnection(p) }; diagnostic.stop(); status = "已停止"; endRecording()
+        if let p = active { disconnecting = p.state != .disconnected; central.cancelPeripheralConnection(p); if !disconnecting { active = nil; activeDeviceID = nil; activeDeviceName = nil } }; diagnostic.stop(); status = disconnecting ? "正在停止并断开…":"已停止"; endRecording()
     }
     func lifecycle(background:Bool) {
         if background { stopScan(); if recording { store.save(snapshot()) }; Task { await store.barrier() }; status = active == nil ? "已进入后台":"后台可能暂停采集，请保持前台" }
@@ -161,7 +200,7 @@ final class BluetoothCentralManager: NSObject, ObservableObject, @preconcurrency
     func centralManagerDidUpdateState(_ central:CBCentralManager) {
         let names:[CBManagerState:String] = [.unknown:"未知",.resetting:"蓝牙重置",.unsupported:"不支持蓝牙",.unauthorized:"蓝牙权限被拒绝",.poweredOff:"蓝牙关闭",.poweredOn:"蓝牙已开启"]
         bluetoothState = names[central.state] ?? "未知"; log("bluetooth_state",bluetoothState)
-        if central.state != .poweredOn { for i in services.indices { for j in services[i].characteristics.indices { services[i].characteristics[j].notifying = false } }; chars = [:]; serviceObjects = []; stopScan(); connectionTimer?.invalidate(); rssiTimer?.invalidate(); active = nil; pending = []; operationQueue = []; currentOperation = nil; operationTimer?.invalidate(); diagnostic.fail(); status = "连接不可用" }
+        if central.state != .poweredOn { for i in services.indices { for j in services[i].characteristics.indices { services[i].characteristics[j].notifying = false } }; chars = [:]; serviceObjects = []; stopScan(); connectionTimer?.invalidate(); rssiTimer?.invalidate(); active = nil; activeDeviceID = nil; activeDeviceName = nil; disconnecting = false; pending = []; operationQueue = []; currentOperation = nil; operationTimer?.invalidate(); diagnostic.fail(); status = "连接不可用" }
     }
     nonisolated static func advertisement(_ data:[String:Any], fallback:String?) -> Advertisement {
         let services = ((data[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID]) ?? []) + ((data[CBAdvertisementDataOverflowServiceUUIDsKey] as? [CBUUID]) ?? [])
@@ -180,11 +219,11 @@ final class BluetoothCentralManager: NSObject, ObservableObject, @preconcurrency
         publishEvents(); pendingValues = [:]; services = []; serviceObjects = []; chars = [:]; operationQueue = []; currentOperation = nil; operationTimer?.invalidate(); diagnostic.connected(); status = "正在发现 GATT"; log("connected"); pending = ["services"]; armTimeout(seconds:45); p.discoverServices(nil)
         rssiTimer?.invalidate(); rssiTimer = mainTimer(interval:3,repeats:true) { [weak self] in self?.active?.readRSSI() }
     }
-    func centralManager(_ central:CBCentralManager,didFailToConnect p:CBPeripheral,error:Error?) { guard active === p else { return }; connectionTimer?.invalidate(); log("connect_failed",error:error); active = nil; if userStopped { diagnostic.stop(); status = "已停止" } else { diagnostic.fail(); status = "连接失败" } }
+    func centralManager(_ central:CBCentralManager,didFailToConnect p:CBPeripheral,error:Error?) { guard active === p else { return }; connectionTimer?.invalidate(); log("connect_failed",error:error); active = nil; activeDeviceID = nil; activeDeviceName = nil; disconnecting = false; if userStopped { diagnostic.stop(); status = "已停止" } else { diagnostic.fail(); status = "连接失败" } }
     func centralManager(_ central:CBCentralManager,didDisconnectPeripheral p:CBPeripheral,error:Error?) {
-        guard active === p else { return }; log("disconnected",error:error); if recording { current = snapshot(); if let r = current { store.save(r) } }; connectionTimer?.invalidate(); rssiTimer?.invalidate(); pending = []; operationQueue = []; currentOperation = nil; operationTimer?.invalidate(); active = nil; status = userStopped ? "已停止":"已断开"; if userStopped { diagnostic.stop() } else { diagnostic.fail() }; for i in services.indices { for j in services[i].characteristics.indices { services[i].characteristics[j].notifying = false } }; chars = [:]; serviceObjects = []
+        guard active === p else { return }; log("disconnected",error:error); if recording { current = snapshot(); if let r = current { store.save(r) } }; connectionTimer?.invalidate(); rssiTimer?.invalidate(); pending = []; operationQueue = []; currentOperation = nil; operationTimer?.invalidate(); active = nil; activeDeviceID = nil; activeDeviceName = nil; disconnecting = false; status = userStopped ? "已停止":"已断开"; if userStopped { diagnostic.stop() } else { diagnostic.fail() }; for i in services.indices { for j in services[i].characteristics.indices { services[i].characteristics[j].notifying = false } }; chars = [:]; serviceObjects = []
         if allowReconnect && reconnectFavorites && favoriteIDs.contains(p.identifier) && reconnectAttempts < 2 && central.state == .poweredOn {
-            reconnectAttempts += 1; active = p; diagnostic.start(); status = "重连 \(reconnectAttempts)/2"; central.connect(p,options:nil); armTimeout(seconds:15)
+            reconnectAttempts += 1; active = p; activeDeviceID = p.identifier; activeDeviceName = p.name; diagnostic.start(); status = "重连 \(reconnectAttempts)/2"; central.connect(p,options:nil); armTimeout(seconds:15)
         }
     }
     private func finish(_ key:String) { pending.remove(key); guard diagnostic.state == .discovering else { return }; status = "GATT 发现：剩余 \(pending.count) 项"; if pending.isEmpty, diagnostic.state == .discovering { connectionTimer?.invalidate(); diagnostic.discovered(); status = "GATT 发现完成；只读监听中"; runNextOperation(); if let r = current { var updated = r; updated.topology = services; store.save(updated) } } }

@@ -13,7 +13,19 @@ struct PrivacyOptions: Sendable {
     var hideIdentifiers = true
     var removePayloads = false
 }
-enum ExportFormat: String, CaseIterable, Sendable { case json, jsonl, csv, markdown }
+enum ExportFormat: String, CaseIterable, Sendable {
+    case json, jsonl, csv, markdown, text, reportText
+    var displayName: String {
+        switch self {
+        case .json: "JSON 结构化报告"
+        case .jsonl: "JSONL 原始日志"
+        case .csv: "CSV 事件表格"
+        case .markdown: "Markdown 诊断报告"
+        case .text: "TXT 完整日志"
+        case .reportText: "TXT 诊断结果"
+        }
+    }
+}
 enum LogCodec {
     static func encoder() -> JSONEncoder { let e = JSONEncoder(); e.dateEncodingStrategy = .custom { date, encoder in var c = encoder.singleValueContainer(); try c.encode(iso(date)) }; e.outputFormatting = [.sortedKeys]; return e }
     static func iso(_ date: Date) -> String { let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime,.withFractionalSeconds]; return f.string(from:date) }
@@ -143,7 +155,7 @@ final class EventLogStore: @unchecked Sendable {
             let encoder = LogCodec.encoder()
             do {
                 let dir = root.appendingPathComponent("Exports"); try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true)
-                let url = dir.appendingPathComponent("BLEInspector-\(record.id)-\(UUID()).\(format == .markdown ? "md" : format.rawValue)")
+                let url = dir.appendingPathComponent("BLEInspector-\(record.id)-\(UUID()).\(format == .markdown ? "md" : (format == .text || format == .reportText) ? "txt" : format.rawValue)")
                 output = url; try Data().write(to:url); let h = try FileHandle(forWritingTo:url); defer { try? h.close() }
                 func write(_ s:String) throws { try h.write(contentsOf:Data(s.utf8)) }
                 var safeRecord = record
@@ -152,19 +164,21 @@ final class EventLogStore: @unchecked Sendable {
                 if format == .json { try write("{\"session\":"); try h.write(contentsOf:encoder.encode(safeRecord)); try write(",\"events\":[") }
                 if format == .csv { try write("timestamp,monotonicTimestamp,sessionID,peripheralIdentifier,deviceName,serviceUUID,characteristicUUID,eventType,direction,characteristicInstanceID,payloadLength,rawHexPayload,base64Payload,errorDescription,detail\n") }
                 if format == .jsonl { var context = BLEEvent(sessionID:record.id,eventType:"session_context",detail:"会话与 GATT 上下文"); context.payload = try encoder.encode(safeRecord); try h.write(contentsOf:encoder.encode(context)+Data([10])) }
+                if format == .text { try write("BLE Inspector 完整事件日志\n会话：\(record.id)\n开始：\(LogCodec.iso(record.started))\n\n") }
                 var first = true; var count = 0; var summary = SessionAnalysis(); var valueCount = 0
                 try eachEvent(files) { event in
                     var e = event
                     if privacy.hideIdentifiers { e.peripheralIdentifier = nil; e.deviceName = nil; e.detail = "上下文文字已隐藏"; e.errorDescription = e.errorDescription == nil ? nil : "错误文字已隐藏" }
                     if privacy.removePayloads { e.payload = nil; if e.eventType == "advertisement" { e.detail = "广播原始数据已隐藏" } }
-                    count += 1; if e.eventType == "value" { valueCount += 1 }; if format == .json || format == .markdown { try summary.append(e) }
+                    count += 1; if e.eventType == "value" { valueCount += 1 }; if format == .json || format == .markdown || format == .reportText { try summary.append(e) }
                     if format == .jsonl { try h.write(contentsOf:encoder.encode(e)+Data([10])) }
                     if format == .json { if !first { try write(",") }; first = false; try h.write(contentsOf:encoder.encode(e)) }
                     if format == .csv { try write(LogCodec.csv(e)) }
+                    if format == .text { try write("[\(LogCodec.iso(e.timestamp))] \(e.eventType) \(e.direction)\nMonotonic：\(e.monotonicTimestamp) · Notify enabled：\(e.notificationEnabled.map(String.init) ?? "未知")\n设备：\(e.deviceName ?? "隐藏 / 未连接") · \(e.peripheralIdentifier ?? "隐藏")\nService：\(e.serviceUUID ?? "-")\nCharacteristic：\(e.characteristicUUID ?? "-") · instance=\(e.characteristicInstanceID ?? "-")\n长度：\(e.payloadLength)\nHex：\(e.rawHexPayload)\nBase64：\(e.base64Payload)\n详情：\(e.detail)\n错误：\(e.errorDescription ?? "无")\n\n") }
                     
                 }
                 if format == .json { try write("],\"analysis\":"); try h.write(contentsOf:encoder.encode(summary.groups.mapValues { $0.result })); try write(",\"diagnosticErrors\":"); try h.write(contentsOf:encoder.encode(summary.errorCounts)); try write("}") }
-                if format == .markdown {
+                if format == .markdown || format == .reportText {
                     try write("# BLE Inspector 诊断报告\n\n会话：\(record.id)\n\n开始：\(record.started)\n\n事件数：\(count)\n\nMAC：iOS 不可获取\n\n## GATT 拓扑\n\n")
                     try write("## 设备基本信息与广播\n\n")
                     if let device = safeRecord.device { try write("名称：\(device.name)\n\n广播服务：\(device.advertisement.services.joined(separator:","))\n\nManufacturer Data：\(privacy.removePayloads ? "已隐藏" : device.advertisement.manufacturer?.hex ?? "无")\n\nService Data：\(privacy.removePayloads ? "已隐藏" : device.advertisement.serviceData.map { $0.key+":"+$0.value.hex }.joined(separator:"; "))\n\n可连接：\(device.advertisement.connectable.map(String.init) ?? "未知")\n\n") } else { try write("设备身份与广播上下文已隐藏，或未连接设备。\n\n") }

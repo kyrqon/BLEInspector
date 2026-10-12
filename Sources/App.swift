@@ -13,21 +13,25 @@ struct BLEInspectorApp: App {
         }
     }
 }
+enum AppTab: Hashable { case devices, inspector, capture, analysis, settings }
+
 struct MainView: View {
     @ObservedObject var model: BluetoothCentralManager
+    @State private var selectedTab: AppTab = .devices
     var body: some View {
-        TabView {
-            DevicesView(model:model).tabItem { Label("Devices",systemImage:"antenna.radiowaves.left.and.right") }
-            InspectorView(model:model).tabItem { Label("Inspector",systemImage:"list.bullet.indent") }
-            CaptureView(model:model).tabItem { Label("Capture",systemImage:"record.circle") }
-            AnalysisView(model:model).tabItem { Label("Analysis",systemImage:"chart.bar.xaxis") }
-            SettingsView(model:model).tabItem { Label("Settings",systemImage:"gear") }
+        TabView(selection:$selectedTab) {
+            DevicesView(model:model,onOpenInspector:{ selectedTab = .inspector }).tag(AppTab.devices).tabItem { Label("Devices",systemImage:"antenna.radiowaves.left.and.right") }
+            InspectorView(model:model).tag(AppTab.inspector).tabItem { Label("Inspector",systemImage:"list.bullet.indent") }
+            CaptureView(model:model).tag(AppTab.capture).tabItem { Label("Capture",systemImage:"record.circle") }
+            AnalysisView(model:model).tag(AppTab.analysis).tabItem { Label("Analysis",systemImage:"chart.bar.xaxis") }
+            SettingsView(model:model).tag(AppTab.settings).tabItem { Label("Settings",systemImage:"gear") }
         }.tint(.cyan)
         .alert("诊断提示",isPresented:Binding(get:{ model.errorMessage != nil },set:{ if !$0 { model.errorMessage = nil } })) { Button("确定") { model.errorMessage = nil } } message: { Text(model.errorMessage ?? "") }
     }
 }
 struct DevicesView: View {
     @ObservedObject var model: BluetoothCentralManager
+    let onOpenInspector: () -> Void
     @State private var search = ""
     @State private var serviceFilter = ""
     @State private var minimumRSSI = -100.0
@@ -48,7 +52,7 @@ struct DevicesView: View {
                 }
                 Section("附近与历史设备") {
                     if filtered.isEmpty { ContentUnavailableView("未发现匹配设备",systemImage:"antenna.radiowaves.left.and.right",description:Text("开启蓝牙并扫描；设备需正在广播。")) }
-                    ForEach(filtered) { device in NavigationLink { DeviceDetail(model:model,deviceID:device.id) } label: {
+                    ForEach(filtered) { device in NavigationLink { DeviceDetail(model:model,deviceID:device.id,onOpenInspector:onOpenInspector) } label: {
                         VStack(alignment:.leading) { Text(device.name); Text("\(device.rssi == 127 ? "RSSI 未知":String(device.rssi)+" dBm") · \(device.favorite ? "收藏":"")").font(.caption); Text(device.id.uuidString).font(.caption2.monospaced()).foregroundStyle(.secondary); Text(device.lastSeen,style:.relative).font(.caption2) }
                     } }
                 }
@@ -59,18 +63,26 @@ struct DevicesView: View {
 struct DeviceDetail: View {
     @ObservedObject var model: BluetoothCentralManager
     let deviceID: UUID
+    let onOpenInspector: () -> Void
     var device: Device? { model.devices.first { $0.id == deviceID } }
     var body: some View {
         Form {
             if let d = device {
+                if model.activeDeviceID == deviceID {
+                    Section("当前诊断") { DiagnosticStatusView(model:model); Button("查看诊断进度和结果") { onOpenInspector() } }
+                }
                 Section("设备") {
                     Text(d.name); Text(d.id.uuidString).textSelection(.enabled)
                     LabeledContent("RSSI",value:"\(d.rssi) dBm")
                     LabeledContent("MAC",value:"iOS 不可获取")
                     LabeledContent("可连接",value:d.advertisement.connectable.map { $0 ? "是":"否" } ?? "未知")
                     Button(d.favorite ? "取消收藏":"收藏设备") { model.favorite(d) }
-                    Button("开始一键自动诊断") { model.connect(d,automatic:true) }
-                    Button("连接：专业调试") { model.connect(d,automatic:false) }
+                    Button {
+                        if model.connect(d,automatic:true) { onOpenInspector() }
+                    } label: { Label(model.activeDeviceID == deviceID ? "查看 / 继续自动诊断":"开始一键自动诊断",systemImage:"waveform.path.ecg") }
+                    .buttonStyle(.borderedProminent).disabled(model.disconnecting)
+                    .accessibilityHint("开始只读诊断并打开进度页面")
+                    Button("连接：专业调试") { if model.connect(d,automatic:false) { onOpenInspector() } }.disabled(model.disconnecting)
                 }
                 Section("广播") {
                     ForEach(d.advertisement.services,id:\.self) { Text($0).font(.caption.monospaced()) }
@@ -94,7 +106,11 @@ struct InspectorView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section { Text(model.status); Text("诊断阶段：\(model.diagnostic.state.rawValue)"); if model.diagnostic.state == .connecting || model.diagnostic.state == .discovering { ProgressView() }; Button("停止诊断并断开") { model.disconnect() } }
+                Section("诊断状态") {
+                    DiagnosticStatusView(model:model)
+                    Button(model.disconnecting ? "正在断开…":"停止诊断并断开",role:.destructive) { model.disconnect() }.disabled((model.activeDeviceID == nil && !model.recording) || model.disconnecting)
+                }
+                Section("日志与诊断结果") { SessionExportPanel(model:model,record:nil) }
                 if model.services.isEmpty { ContentUnavailableView("等待 GATT 发现",systemImage:"list.bullet.indent",description:Text("在 Devices 中选择设备连接。")) }
                 ForEach(model.services) { service in
                     DisclosureGroup {
@@ -152,6 +168,7 @@ struct CaptureView: View {
                     TextField("会话备注 / 事件标记",text:$model.note)
                     Button("添加事件标记") { model.mark() }
                 }
+                Section("分享 / 保存到文件") { SessionExportPanel(model:model,record:nil) }
                 Section("过滤") { TextField("事件类型",text:$eventType); Toggle("时间范围",isOn:$timeFilter); if timeFilter { DatePicker("开始",selection:$since); DatePicker("结束",selection:$until) } }
                 Section("实时日志：最近 500 条，完整日志在会话文件中") {
                     ForEach(model.events.reversed().filter { e in (eventType.isEmpty || e.eventType.localizedCaseInsensitiveContains(eventType)) && (!timeFilter || (e.timestamp >= since && e.timestamp <= until)) && (search.isEmpty || [e.deviceName,e.peripheralIdentifier,e.serviceUUID,e.characteristicUUID,e.detail,e.rawHexPayload].compactMap { $0 }.joined(separator:" ").localizedCaseInsensitiveContains(search)) }) { e in
@@ -208,20 +225,12 @@ struct AnalysisView: View {
 struct SessionView: View {
     @ObservedObject var model: BluetoothCentralManager
     let record: SessionRecord
-    @State private var hideIdentifiers = true
-    @State private var removePayloads = false
-    @State private var exportURL: URL?
-    @State private var working = false
     @State private var summary = ""
     @State private var historySamples: [BLEEvent] = []
     var body: some View {
         Form {
             Section("会话") { Text(record.id.uuidString); Text(record.note); Text(record.started,format:.dateTime); Text("服务数：\(record.topology.count)") }
-            Section("隐私检查") { Toggle("隐藏设备 UUID、名称、备注及自由文字",isOn:$hideIdentifiers); Toggle("移除原始 Payload（含广播数据）",isOn:$removePayloads); Text("二进制数据本身可能含设备身份。分享前请检查；隐藏标识符不会自动识别 Payload 内的个人信息。").font(.caption) }
-            Section("导出") {
-                ForEach(ExportFormat.allCases,id:\.rawValue) { format in Button("生成 \(format.rawValue.uppercased())") { working = true; exportURL = nil; Task { do { exportURL = try await model.store.export(record,format:format,privacy:PrivacyOptions(hideIdentifiers:hideIdentifiers,removePayloads:removePayloads)) } catch { model.errorMessage = error.localizedDescription }; working = false } }.disabled(working) }
-                if working { ProgressView() }; if let url = exportURL { ShareLink(item:url) { Label("系统分享",systemImage:"square.and.arrow.up") } }
-            }
+            Section("分享 / 保存到文件") { SessionExportPanel(model:model,record:record) }
             Section("历史原始数据（最近 80 个 value 回调）") {
                 ForEach(Array(historySamples.suffix(80).reversed())) { e in VStack(alignment:.leading) { Text(e.timestamp,format:.dateTime).font(.caption); Text(e.characteristicUUID ?? "").font(.caption.monospaced()); Text(e.rawHexPayload).font(.caption.monospaced()).textSelection(.enabled) } }
             }
@@ -248,9 +257,79 @@ struct SettingsView: View {
             Section("扫描与连接") { Slider(value:$model.scanSeconds,in:5 ... 120,step:5); Text("扫描超时：\(Int(model.scanSeconds)) 秒"); Toggle("自动诊断订阅 Notify / Indicate",isOn:$model.autoSubscribe); Toggle("收藏设备意外断线后重连（最多 2 次）",isOn:$model.reconnectFavorites) }
             Section("Profile") { ForEach(model.profiles) { Text($0.name) }; Button("导入 Profile JSON") { importing = true }; Text("只匹配名称与提示已观察 UUID；不含任何车辆控制命令。") }
             Section("能力边界") { Text("仅访问本 App 连接设备提供的 GATT。不能抓取 BLE 链路层、其他 App 的全部蓝牙通信或完整经典蓝牙数据；真实 MAC 地址不可获取；加密 / 私有协议不保证能理解。所有日志仅本地保存。保持前台以持续采集。") }
-            Section("存储与版本") { Text("每会话最多 64 个约 4 MiB 分段；达到上限停止录制并提示。UI 最近 500 条；分析按完整会话增量统计（最多 4096 个特征实例，重复模式索引最多 1024 种）；导出流式读取完整会话。总日志空间达到约 1 GiB 停止录制。历史文件请通过 iOS 文件 App 管理删除。导出副本也需手动删除。"); Text("BLE Inspector 1.0 · iOS 17+") }
+            Section("存储与版本") { Text("每会话最多 64 个约 4 MiB 分段；达到上限停止录制并提示。UI 最近 500 条；分析按完整会话增量统计（最多 4096 个特征实例，重复模式索引最多 1024 种）；导出流式读取完整会话。总日志空间达到约 1 GiB 停止录制。历史文件请通过 iOS 文件 App 管理删除。导出副本也需手动删除。"); Text("BLE Inspector 1.1 · iOS 17+") }
         }.navigationTitle("Settings").fileImporter(isPresented:$importing,allowedContentTypes:[.json]) { result in
             do { let url = try result.get(); let scoped = url.startAccessingSecurityScopedResource(); defer { if scoped { url.stopAccessingSecurityScopedResource() } }; let size = try url.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? 0; guard size <= 262144 else { throw NSError(domain:"Profile",code:1,userInfo:[NSLocalizedDescriptionKey:"Profile 文件超过 256 KiB"]) }; try model.importProfiles(Data(contentsOf:url)) } catch { model.errorMessage = error.localizedDescription }
         } }
+    }
+}
+
+
+struct DiagnosticStatusView: View {
+    @ObservedObject var model: BluetoothCentralManager
+    private var waiting: Bool { model.diagnostic.state == .connecting || model.diagnostic.state == .discovering || model.disconnecting }
+    var body: some View {
+        VStack(alignment:.leading,spacing:10) {
+            Label(model.disconnecting ? "正在停止":model.diagnostic.state == .collecting && !model.autoDiagnostic ? "已连接 · 专业调试":model.diagnostic.state.displayName,systemImage:model.diagnostic.state == .collecting ? "antenna.radiowaves.left.and.right":"waveform.path.ecg")
+                .font(.headline).foregroundStyle(model.diagnostic.state == .failed ? Color.orange:Color.cyan)
+            if let name = model.activeDeviceName { Text(name).font(.subheadline) }
+            Text(model.status).font(.subheadline).accessibilityAddTraits(.updatesFrequently)
+            if waiting { ProgressView().accessibilityLabel(model.status) }
+            Text("服务 \(model.services.count) · 特征 \(model.services.flatMap(\.characteristics).count) · 已录制事件 \(model.recordedEventCount)").font(.caption).foregroundStyle(.secondary)
+            if model.recording { Label(model.paused ? "录制已暂停":"正在录制到本机",systemImage:model.paused ? "pause.circle":"record.circle").font(.caption).foregroundStyle(model.paused ? Color.orange:Color.green) }
+            if model.diagnostic.state == .collecting && model.autoDiagnostic { Text("诊断已启动。通知监听会持续进行，完成后可停止并分享；无数据到达时也会保留连接和操作日志。").font(.caption).foregroundStyle(.secondary) }
+        }.padding(.vertical,4)
+    }
+}
+
+struct SessionExportPanel: View {
+    @ObservedObject var model: BluetoothCentralManager
+    let record: SessionRecord?
+    @State private var hideIdentifiers = true
+    @State private var removePayloads = false
+    @State private var exportURL: URL?
+    @State private var preparing = false
+    @State private var generatedName = ""
+    private var available: Bool { record != nil || model.current != nil }
+    var body: some View {
+        Group {
+            if available {
+                Toggle("隐藏设备标识与备注",isOn:$hideIdentifiers).disabled(preparing)
+                Toggle("移除原始二进制数据",isOn:$removePayloads).disabled(preparing)
+                HStack {
+                    Button { generate(.text) } label: { Label("日志 TXT",systemImage:"doc.text") }
+                    Spacer()
+                    Button { generate(.reportText) } label: { Label("诊断结果 TXT",systemImage:"doc.text.magnifyingglass") }
+                }.disabled(preparing)
+                Menu("更多导出格式") {
+                    ForEach(ExportFormat.allCases,id:\.rawValue) { format in Button(format.displayName) { generate(format) } }
+                }.disabled(preparing)
+                if preparing { ProgressView("正在生成文件…") }
+                if let url = exportURL {
+                    Text("已生成：\(generatedName)").font(.caption).foregroundStyle(.green)
+                    ShareLink(item:url) { Label("分享 / 保存到文件",systemImage:"square.and.arrow.up") }
+                        .buttonStyle(.borderedProminent)
+                    Text("在系统分享菜单选择“存储到文件”，即可保存到本机或 iCloud Drive。").font(.caption).foregroundStyle(.secondary)
+                }
+                Text(record == nil && model.recording ? "导出当前录制快照，采集继续进行。原始二进制可能包含身份信息，分享前请检查。":"导出已保存会话。原始二进制可能包含身份信息，分享前请检查。").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("开始自动诊断或在 Capture 开始录制后，即可分享日志和结果。").font(.subheadline).foregroundStyle(.secondary)
+            }
+        }
+        .onChange(of:hideIdentifiers) { _, _ in exportURL = nil }
+        .onChange(of:removePayloads) { _, _ in exportURL = nil }
+        .onChange(of:model.current?.id) { _, _ in if record == nil { exportURL = nil } }
+    }
+    private func generate(_ format: ExportFormat) {
+        guard !preparing else { return }; preparing = true; exportURL = nil
+        let privacy = PrivacyOptions(hideIdentifiers:hideIdentifiers,removePayloads:removePayloads)
+        Task {
+            do {
+                if let record { exportURL = try await model.store.export(record,format:format,privacy:privacy) }
+                else { exportURL = try await model.exportCurrent(format:format,privacy:privacy) }
+                generatedName = format.displayName
+            } catch { model.errorMessage = error.localizedDescription }
+            preparing = false
+        }
     }
 }

@@ -352,3 +352,25 @@ enum ReadOnlyDiagnosticPlanner {
         return result
     }
 }
+
+
+enum ConnectionRequestDisposition: Equatable { case start, showExisting, switchRequired, disconnecting }
+enum ConnectionRequestPolicy {
+    static func evaluate(requested: UUID, active: UUID?, disconnecting: Bool) -> ConnectionRequestDisposition {
+        if disconnecting { return .disconnecting }
+        guard let active else { return .start }
+        return active == requested ? .showExisting : .switchRequired
+    }
+}
+extension DiagnosticState {
+    var displayName: String {
+        switch self {
+        case .idle: "未开始"
+        case .connecting: "正在连接"
+        case .discovering: "正在发现 GATT"
+        case .collecting: "只读采集中"
+        case .stopped: "已停止"
+        case .failed: "连接中断或诊断异常"
+        }
+    }
+}

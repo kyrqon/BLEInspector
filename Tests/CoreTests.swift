@@ -205,6 +205,30 @@ final class CoreTests: XCTestCase, @unchecked Sendable {
         var accumulator = FrameAccumulator(); accumulator.append(decoded)
         XCTAssertTrue(accumulator.result.facts.contains { $0.contains("通知开启期间回调：1") })
     }
+    func testConnectionRequestPolicyIsIdempotent() {
+        let first = UUID(), other = UUID()
+        XCTAssertEqual(ConnectionRequestPolicy.evaluate(requested:first,active:nil,disconnecting:false),.start)
+        XCTAssertEqual(ConnectionRequestPolicy.evaluate(requested:first,active:first,disconnecting:false),.showExisting)
+        XCTAssertEqual(ConnectionRequestPolicy.evaluate(requested:other,active:first,disconnecting:false),.switchRequired)
+        XCTAssertEqual(ConnectionRequestPolicy.evaluate(requested:first,active:first,disconnecting:true),.disconnecting)
+    }
+    func testTextLogAndReportExports() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:dir) }
+        let store = EventLogStore(root:dir), id = UUID()
+        let record = SessionRecord(id:id,started:Date(),note:"",device:nil,topology:[]); store.save(record)
+        var value = sample(id,byte:255,time:0); value.peripheralIdentifier = "PRIVATE-DEVICE"; value.deviceName = "PRIVATE-NAME"; store.append(value)
+        for format in [ExportFormat.text,.reportText] {
+            let file = try await store.export(record,format:format,privacy:PrivacyOptions())
+            XCTAssertEqual(file.pathExtension,"txt")
+            let text = try String(contentsOf:file,encoding:.utf8)
+            XCTAssertFalse(text.contains("PRIVATE-DEVICE")); XCTAssertFalse(text.contains("PRIVATE-NAME"))
+            if format == .text { XCTAssertTrue(text.contains("AA FF")); XCTAssertTrue(text.contains("value")) }
+            if format == .reportText { XCTAssertTrue(text.contains("诊断报告")); XCTAssertTrue(text.contains("观测事实")); XCTAssertTrue(text.contains("推测（未确认）")) }
+        }
+        let redacted = try await store.export(record,format:.text,privacy:PrivacyOptions(hideIdentifiers:true,removePayloads:true))
+        XCTAssertFalse(try String(contentsOf:redacted,encoding:.utf8).contains("AA FF"))
+    }
     func testExportPrivacy() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:dir) }

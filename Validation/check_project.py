@@ -1,5 +1,5 @@
 """Portable structural validation only; does not replace xcodebuild."""
-import json, pathlib, plistlib, re, xml.etree.ElementTree as ET
+import json, pathlib, plistlib, re, struct, xml.etree.ElementTree as ET
 root=pathlib.Path(__file__).resolve().parents[1]
 s=(root/'BLEInspector.xcodeproj/project.pbxproj').read_text()
 s=re.sub(r'//[^\n]*|/\*.*?\*/','',s,flags=re.S)
@@ -42,3 +42,15 @@ sources='\n'.join(p.read_text() for p in (root/'Sources').glob('*.swift'))
 assert 'writeValue(' not in sources
 assert 'MAC：iOS 不可获取' in sources
 print(f'PASS: {len(objects)} PBX objects, all references/files, plist, scheme, JSON resources, no writeValue calls')
+
+icon_dir = root/'Assets.xcassets/AppIcon.appiconset'
+icon = (icon_dir/'AppIcon.png').read_bytes()
+assert icon[:8] == b'\x89PNG\r\n\x1a\n'
+width,height = struct.unpack('>II',icon[16:24])
+assert (width,height) == (1024,1024)
+assert icon[25] in (2,3), 'App icon must be opaque RGB or indexed'
+assert b'tRNS' not in icon, 'App icon must not include transparency'
+for obj in objects.values():
+ if obj.get('isa') == 'XCBuildConfiguration' and obj.get('buildSettings',{}).get('PRODUCT_BUNDLE_IDENTIFIER') == 'com.example.BLEInspector':
+  assert obj['buildSettings']['ASSETCATALOG_COMPILER_APPICON_NAME'] == 'AppIcon'
+print('PASS: opaque 1024x1024 app icon and AppIcon build settings')

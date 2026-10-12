@@ -1,10 +1,12 @@
-# 交付文件
+# 交付文件（1.1）
 
-重构原 Xcode 工程；Sources/Bluetooth.swift 和 Sources/App.swift 替代原 BLEProbe.swift / App.swift。新增 Core / Storage、单元测试、资源、权限、Profile、Package、中文文档及验证脚本。追加修复完整会话分析、主线程隔离、独立读取快照、停止状态与广播脱敏。
+新增诊断即时反馈、幂等连接请求策略、当前会话分享、TXT 日志 / 诊断结果和 AppIcon。源代码、测试、权限、Profile、中文文档及验证记录如下。
 
 - `.gitignore`
 - `ARCHITECTURE.md`
 - `Assets.xcassets/AccentColor.colorset/Contents.json`
+- `Assets.xcassets/AppIcon.appiconset/AppIcon.png`
+- `Assets.xcassets/AppIcon.appiconset/Contents.json`
 - `Assets.xcassets/Contents.json`
 - `BLEInspector.xcodeproj/project.pbxproj`
 - `BLEInspector.xcodeproj/xcshareddata/xcschemes/BLEInspector.xcscheme`
