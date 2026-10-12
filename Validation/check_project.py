@@ -54,3 +54,13 @@ for obj in objects.values():
  if obj.get('isa') == 'XCBuildConfiguration' and obj.get('buildSettings',{}).get('PRODUCT_BUNDLE_IDENTIFIER') == 'com.example.BLEInspector':
   assert obj['buildSettings']['ASSETCATALOG_COMPILER_APPICON_NAME'] == 'AppIcon'
 print('PASS: opaque 1024x1024 app icon and AppIcon build settings')
+
+for obj in objects.values():
+ if obj.get('isa') == 'XCBuildConfiguration':
+  settings = obj.get('buildSettings',{})
+  if 'IPHONEOS_DEPLOYMENT_TARGET' in settings: assert settings['IPHONEOS_DEPLOYMENT_TARGET'] == '26.0'
+app = (root/'Sources/App.swift').read_text()
+assert 'glassEffect(.regular' in app and '.buttonStyle(.glassProminent)' in app
+assert 'accessibilityReduceTransparency' in app and '.swipeActions(' in app
+assert '.iOS("26.0")' in (root/'Package.swift').read_text()
+print('PASS: iOS 26 deployment, native glass APIs, transparency fallback and history swipe action')

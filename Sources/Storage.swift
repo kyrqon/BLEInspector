@@ -42,6 +42,8 @@ final class EventLogStore: @unchecked Sendable {
     private let readQueue = DispatchQueue(label: "BLEInspector.read-export", qos: .utility)
     private var timer: DispatchSourceTimer?
     private let admission = NSLock()
+    private let lifecycle = NSLock()
+    private var deletedSessionIDs = Set<UUID>()
     private var queuedEvents = 0
     private var overloadReported = false
     private let encoder = LogCodec.encoder()
@@ -67,7 +69,7 @@ final class EventLogStore: @unchecked Sendable {
         queuedEvents += 1; admission.unlock()
         queue.async { [self] in
             defer { admission.lock(); queuedEvents -= 1; admission.unlock() }
-            guard !blocked.contains(event.sessionID) else { return }; do { buffers[event.sessionID,default:Data()].append(try encoder.encode(event) + Data([10])); if buffers[event.sessionID,default:Data()].count >= 65536 { try flush(event.sessionID) } }
+            guard !blocked.contains(event.sessionID), !isDeleted(event.sessionID) else { return }; do { buffers[event.sessionID,default:Data()].append(try encoder.encode(event) + Data([10])); if buffers[event.sessionID,default:Data()].count >= 65536 { try flush(event.sessionID) } }
             catch { buffers[event.sessionID] = nil; blocked.insert(event.sessionID); onError?(error.localizedDescription) }
         }
     }
@@ -90,12 +92,47 @@ final class EventLogStore: @unchecked Sendable {
         try h.seekToEnd(); try h.write(contentsOf:data); try h.synchronize(); sizes[id,default:0] += data.count; buffers[id] = nil
     }
     private func flushAll() { for id in Array(buffers.keys) { do { try flush(id) } catch { buffers[id] = nil; blocked.insert(id); onError?(error.localizedDescription) } } }
-    func save(_ record: SessionRecord) { queue.async { [self] in do { try FileManager.default.createDirectory(at:directory(record.id),withIntermediateDirectories:true); try encoder.encode(record).write(to:directory(record.id).appendingPathComponent("session.json"),options:.atomic); try flush(record.id) } catch { onError?(error.localizedDescription) } } }
+    func save(_ record: SessionRecord) { queue.async { [self] in guard !isDeleted(record.id) else { return }; do { try FileManager.default.createDirectory(at:directory(record.id),withIntermediateDirectories:true); try encoder.encode(record).write(to:directory(record.id).appendingPathComponent("session.json"),options:.atomic); try flush(record.id) } catch { onError?(error.localizedDescription) } } }
     func barrier() async { await withCheckedContinuation { continuation in queue.async { [self] in flushAll(); continuation.resume() } } }
     func history() async throws -> [SessionRecord] {
         try await withCheckedThrowingContinuation { c in queue.async { [self] in
             do { let dirs = try FileManager.default.contentsOfDirectory(at:root,includingPropertiesForKeys:nil); let records = dirs.compactMap { try? decoder.decode(SessionRecord.self,from:Data(contentsOf:$0.appendingPathComponent("session.json"))) }; c.resume(returning:records.sorted { $0.started > $1.started }) } catch { c.resume(throwing:error) }
         } }
+    }
+    private func isDeleted(_ id: UUID) -> Bool {
+        lifecycle.lock(); defer { lifecycle.unlock() }; return deletedSessionIDs.contains(id)
+    }
+    private func deletedError() -> NSError {
+        NSError(domain:"LogStore",code:6,userInfo:[NSLocalizedDescriptionKey:"该会话已删除，无法继续读取或导出"])
+    }
+    /// Tombstone before cleanup so queued writes cannot recreate removed history.
+    /// Finish/cancel earlier reads on the read queue before removing their files.
+    func deleteSession(_ id: UUID, preservingActiveSession: UUID? = nil) async throws {
+        guard SessionDeletionPolicy.canDelete(id,recordingSessionID:preservingActiveSession) else {
+            throw NSError(domain:"LogStore",code:7,userInfo:[NSLocalizedDescriptionKey:"该会话仍在录制，请先结束录制后再删除"])
+        }
+        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+            queue.async { [self] in
+                lifecycle.lock(); deletedSessionIDs.insert(id); lifecycle.unlock()
+                buffers[id] = nil; segment[id] = nil; sizes[id] = nil; blocked.remove(id)
+                readQueue.async { [self] in
+                    do {
+                        let dir = directory(id)
+                        if FileManager.default.fileExists(atPath:dir.path) { try FileManager.default.removeItem(at:dir) }
+                        let exports = root.appendingPathComponent("Exports",isDirectory:true)
+                        if FileManager.default.fileExists(atPath:exports.path) {
+                            for url in try FileManager.default.contentsOfDirectory(at:exports,includingPropertiesForKeys:nil)
+                                where url.lastPathComponent.hasPrefix("BLEInspector-\(id.uuidString)-") {
+                                try FileManager.default.removeItem(at:url)
+                            }
+                        }
+                        queue.async { [self] in lastCapacityCheck = .distantPast; totalCapacityReached = false; c.resume() }
+                    } catch {
+                        queue.async { [self] in lifecycle.lock(); deletedSessionIDs.remove(id); lifecycle.unlock(); c.resume(throwing:error) }
+                    }
+                }
+            }
+        }
     }
     private struct LogSegment: Sendable {
         var url: URL
@@ -105,7 +142,7 @@ final class EventLogStore: @unchecked Sendable {
     private func snapshotFiles(_ id: UUID) async throws -> [LogSegment] {
         try await withCheckedThrowingContinuation { c in queue.async { [self] in
             do {
-                try flush(id)
+                guard !isDeleted(id) else { throw deletedError() }; try flush(id)
                 let urls = try FileManager.default.contentsOfDirectory(at:directory(id),includingPropertiesForKeys:[.fileSizeKey])
                     .filter { $0.pathExtension == "jsonl" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
                 let files = try urls.map { LogSegment(url:$0,length:try $0.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? 0) }
@@ -113,12 +150,14 @@ final class EventLogStore: @unchecked Sendable {
             } catch { c.resume(throwing:error) }
         } }
     }
-    private func eachEvent(_ files: [LogSegment], _ body: (BLEEvent) throws -> Void) throws {
+    private func eachEvent(_ files: [LogSegment], sessionID: UUID, _ body: (BLEEvent) throws -> Void) throws {
+        guard !isDeleted(sessionID) else { throw deletedError() }
         let decoder = LogCodec.decoder()
         for file in files {
             let h = try FileHandle(forReadingFrom:file.url); defer { try? h.close() }
             var pending = Data(), remaining = file.length
             while remaining > 0 {
+                guard !isDeleted(sessionID) else { throw deletedError() }
                 guard let chunk = try h.read(upToCount:min(65536,remaining)), !chunk.isEmpty else { throw NSError(domain:"LogStore",code:5,userInfo:[NSLocalizedDescriptionKey:"日志在读取期间被截断或删除"]) }
                 remaining -= chunk.count; pending.append(chunk)
                 while let index = pending.firstIndex(of:10) {
@@ -133,7 +172,7 @@ final class EventLogStore: @unchecked Sendable {
     }
     func samples(_ id: UUID, since: Date? = nil, until: Date? = nil, limit: Int = 80) async throws -> [BLEEvent] {
         let files = try await snapshotFiles(id)
-        return try await withCheckedThrowingContinuation { c in readQueue.async { [self] in do { var result:[BLEEvent] = []; try eachEvent(files) { if $0.payload != nil && $0.eventType == "value" && (since == nil || $0.timestamp >= since!) && (until == nil || $0.timestamp <= until!) { result.append($0); if result.count > max(1,min(4096,limit)) { result.removeFirst() } } }; c.resume(returning:result) } catch { c.resume(throwing:error) } } }
+        return try await withCheckedThrowingContinuation { c in readQueue.async { [self] in do { var result:[BLEEvent] = []; try eachEvent(files,sessionID:id) { if $0.payload != nil && $0.eventType == "value" && (since == nil || $0.timestamp >= since!) && (until == nil || $0.timestamp <= until!) { result.append($0); if result.count > max(1,min(4096,limit)) { result.removeFirst() } } }; c.resume(returning:result) } catch { c.resume(throwing:error) } } }
     }
     func analysis(_ id: UUID, since: Date? = nil, until: Date? = nil) async throws -> SessionAnalysis {
         let files = try await snapshotFiles(id)
@@ -141,7 +180,7 @@ final class EventLogStore: @unchecked Sendable {
             do {
                 if let since, let until, since > until { throw NSError(domain:"Analysis",code:2,userInfo:[NSLocalizedDescriptionKey:"时间范围开始晚于结束"]) }
                 var summary = SessionAnalysis()
-                try eachEvent(files) { event in
+                try eachEvent(files,sessionID:id) { event in
                     if (since == nil || event.timestamp >= since!) && (until == nil || event.timestamp <= until!) { try summary.append(event) }
                 }
                 c.resume(returning:summary)
@@ -166,7 +205,7 @@ final class EventLogStore: @unchecked Sendable {
                 if format == .jsonl { var context = BLEEvent(sessionID:record.id,eventType:"session_context",detail:"会话与 GATT 上下文"); context.payload = try encoder.encode(safeRecord); try h.write(contentsOf:encoder.encode(context)+Data([10])) }
                 if format == .text { try write("BLE Inspector 完整事件日志\n会话：\(record.id)\n开始：\(LogCodec.iso(record.started))\n\n") }
                 var first = true; var count = 0; var summary = SessionAnalysis(); var valueCount = 0
-                try eachEvent(files) { event in
+                try eachEvent(files,sessionID:record.id) { event in
                     var e = event
                     if privacy.hideIdentifiers { e.peripheralIdentifier = nil; e.deviceName = nil; e.detail = "上下文文字已隐藏"; e.errorDescription = e.errorDescription == nil ? nil : "错误文字已隐藏" }
                     if privacy.removePayloads { e.payload = nil; if e.eventType == "advertisement" { e.detail = "广播原始数据已隐藏" } }

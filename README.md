@@ -1,14 +1,14 @@
 # BLE Inspector
 
-当前版本 1.1：点击一键诊断后自动打开 Inspector 显示进度，同一设备重复点击不会重复连接。
+当前版本 1.2：原生 Liquid Glass、诊断进度反馈、TXT 分享及历史删除。**需要 iOS 26+ 和 Xcode 26+；iOS 17/18 无法安装此版本。**
 
-通用、仅本地保存数据的 iOS BLE 诊断应用。基于提供的 YadeaBLEProbe-Xcode.zip 重构，最低 iOS 17，Swift 6，SwiftUI / CoreBluetooth，无第三方运行时依赖。
+通用、仅本地保存数据的 iOS BLE 诊断应用。基于提供的 YadeaBLEProbe-Xcode.zip 重构，最低 iOS 26，Swift 6，SwiftUI / CoreBluetooth，无第三方运行时依赖。
 
 **当前交付包含真实 CoreBluetooth 硬件实现，不是模拟 UI。云端只验证核心 Swift 包和源码语法；没有执行 iOS SDK 编译、签名或 iPhone 测试。** 请先按下面步骤完成 Mac 验收。
 
 ## 免费个人真机安装
 
-1. 在 Mac App Store 安装 Xcode 16 或更新版本，启动并完成平台组件安装。iPhone 的系统版本必须被该 Xcode 支持。
+1. 在 Mac App Store 安装 Xcode 26 或更新版本，启动并完成平台组件安装。iPhone 的系统版本必须被该 Xcode 支持。
 2. 解压交付 ZIP，打开 `BLEInspector.xcodeproj`，选择共享 Scheme `BLEInspector`。
 3. Xcode → Settings → Accounts，登录普通 Apple ID。无需加入付费 Apple Developer Program。
 4. 选择 BLEInspector Target → Signing & Capabilities，开启 Automatically manage signing，Team 选择你的 **Personal Team**。
@@ -54,7 +54,7 @@ Settings 可导入 JSON Profile 数组，样例见 `Profiles/yadea-q17-pro.json`
 
 ## 存储与性能
 
-- Documents/BLEInspector/<Session UUID>/session.json 与 events-0000.jsonl 等分段。iOS 文件 App → 我的 iPhone → BLE Inspector 可管理原始会话与 Exports 导出副本。
+- Documents/BLEInspector/<Session UUID>/session.json 与 events-0000.jsonl 等分段。Analysis 历史列表左划删除，或进入会话详情点右上角垃圾桶，确认后清理原始会话和 App 内 Exports 副本。也可通过 iOS 文件 App 管理文件。
 - UI 最近 500 条事件，更新最多每 0.2 秒一次；日志写入在独立串行队列，缓冲最多约 64 KiB 或一秒触发刷盘。
 - 单会话最多 64 段，每段约 4 MiB；本地根目录约 1 GiB 时停止写入。容量检查有五秒采样间隔，小幅超额可能发生。导出副本也会占空间，请手动清理。
 - 写盘排队最多 4096 条；超过上限会明确报错并停止录制，过载事件可能未保存。磁盘错误也会提示。App 被系统强制结束时最后一秒缓冲可能未落盘；不能保证掉电或强杀时零丢失。
@@ -73,3 +73,11 @@ Mac 上运行 `swift test` 可验证独立核心包；Xcode ⌘U 可运行 App �
 ## 从旧版更新
 
 从 GitHub 下载最新源码，使用原来的 Bundle Identifier 和 Personal Team，再按 ⌘R 覆盖安装。无需删除手机上的旧 App；删除 App 会删除其本地会话。新版图标可能需等 iOS 刷新主屏幕缓存。
+
+## 液态玻璃与历史清理（1.2）
+
+- 最低支持 iOS 26；必须用 Xcode 26 或更新版本编译，旧 Xcode 无法识别 glassEffect / glassProminent API。
+- Tab / 导航栏采用 iOS 26 原生外观，诊断状态卡片使用 glassEffect，诊断和分享按钮使用玻璃按钮样式。日志正文保持清晰；系统开启“降低透明度”时状态卡片使用实色背景，系统按钮由系统处理可访问性。
+- Analysis：点击会话进入详情，左划列表条目显示“删除”；详情右上角垃圾桶也可删除。删除前有确认提示。
+- 删除会永久移除该会话的元数据、原始分段日志及 App 内对应导出副本，同时刷新列表和比较选项。外部已分享或另存到 iCloud 等位置的文件不会被删除。
+- 录制中（含暂停）的当前会话不能删除，需先结束。删除旧历史不会断开其他正在采集的设备或清理其他会话。

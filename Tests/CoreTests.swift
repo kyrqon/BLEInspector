@@ -229,6 +229,56 @@ final class CoreTests: XCTestCase, @unchecked Sendable {
         let redacted = try await store.export(record,format:.text,privacy:PrivacyOptions(hideIdentifiers:true,removePayloads:true))
         XCTAssertFalse(try String(contentsOf:redacted,encoding:.utf8).contains("AA FF"))
     }
+    func testSessionDeletionProtectsActiveRecording() async throws {
+        let id = UUID(), other = UUID()
+        XCTAssertFalse(SessionDeletionPolicy.canDelete(id,recordingSessionID:id))
+        XCTAssertTrue(SessionDeletionPolicy.canDelete(id,recordingSessionID:other))
+        XCTAssertTrue(SessionDeletionPolicy.canDelete(id,recordingSessionID:nil))
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:dir) }
+        let store = EventLogStore(root:dir)
+        store.save(SessionRecord(id:id,started:Date(),note:"",device:nil,topology:[])); store.append(sample(id,byte:1,time:0)); await store.barrier()
+        do { try await store.deleteSession(id,preservingActiveSession:id); XCTFail("正在录制的会话不能删除") }
+        catch { XCTAssertEqual((error as NSError).code,7) }
+        let history = try await store.history(); XCTAssertEqual(history.count,1)
+        let events = try await store.samples(id); XCTAssertEqual(events.count,1)
+    }
+    func testSessionDeletionCleansOnlyTargetAndPreventsResurrection() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:dir) }
+        let store = EventLogStore(root:dir), first = UUID(), second = UUID()
+        let a = SessionRecord(id:first,started:Date(),ended:Date(),note:"first",device:nil,topology:[])
+        let b = SessionRecord(id:second,started:Date(),ended:Date(),note:"second",device:nil,topology:[])
+        store.save(a); store.save(b); store.append(sample(first,byte:1,time:0)); store.append(sample(second,byte:2,time:0))
+        let aFile = try await store.export(a,format:.text,privacy:PrivacyOptions())
+        let bFile = try await store.export(b,format:.text,privacy:PrivacyOptions())
+        try await store.deleteSession(first)
+        XCTAssertFalse(FileManager.default.fileExists(atPath:dir.appendingPathComponent(first.uuidString).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath:aFile.path)); XCTAssertTrue(FileManager.default.fileExists(atPath:bFile.path))
+        store.save(a); store.append(sample(first,byte:3,time:1)); await store.barrier()
+        XCTAssertFalse(FileManager.default.fileExists(atPath:dir.appendingPathComponent(first.uuidString).path))
+        let history = try await store.history(); XCTAssertEqual(history.map(\.id),[second])
+        do { _ = try await store.analysis(first); XCTFail("已删除会话不可分析") } catch { XCTAssertEqual((error as NSError).code,6) }
+        try await store.deleteSession(first)
+    }
+    func testDeletionWithConcurrentExportDoesNotLeaveArtifacts() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:dir) }
+        let store = EventLogStore(root:dir), id = UUID(), other = UUID()
+        let a = SessionRecord(id:id,started:Date(),ended:Date(),note:"",device:nil,topology:[])
+        store.save(a); store.save(SessionRecord(id:other,started:Date(),note:"",device:nil,topology:[]))
+        for i in 0..<100 { store.append(sample(id,byte:UInt8(i),time:Double(i))) }; await store.barrier()
+        let exporting = Task { try await store.export(a,format:.jsonl,privacy:PrivacyOptions()) }
+        let deleting = Task { try await store.deleteSession(id,preservingActiveSession:other) }
+        for i in 0..<100 { store.append(sample(other,byte:UInt8(i),time:Double(i))) }
+        _ = await exporting.result; try await deleting.value; await store.barrier()
+        let analysis = try await store.analysis(other); XCTAssertEqual(analysis.groups.values.first?.count,100)
+        let exports = dir.appendingPathComponent("Exports")
+        if FileManager.default.fileExists(atPath:exports.path) {
+            let files = try FileManager.default.contentsOfDirectory(at:exports,includingPropertiesForKeys:nil)
+            XCTAssertFalse(files.contains { $0.lastPathComponent.hasPrefix("BLEInspector-\(id)-") })
+        }
+    }
     func testExportPrivacy() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:dir) }

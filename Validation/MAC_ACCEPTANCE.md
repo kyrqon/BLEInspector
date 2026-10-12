@@ -2,7 +2,7 @@
 
 以下是待执行步骤，不是已通过记录。
 
-1. Xcode 16+ 打开 BLEInspector.xcodeproj，选择 BLEInspector Scheme。
+1. Xcode 26+ 打开 BLEInspector.xcodeproj，选择 BLEInspector Scheme。
 2. 配置 App / Test Target 的 Personal Team 和唯一 Bundle Identifier。选择实际 iPhone，⌘B 构建，⌘U 测试；记录 Xcode / iOS 版本与错误。Linux 核心包测试没有验证 SwiftUI 或 CoreBluetooth SDK 类型检查。
 3. 按 README 打开 iPhone 开发者模式并安装，确认 App 首次蓝牙授权提示，拒绝授权时正确提示而不崩溃；再在设置允许。
 4. 开启 BLE 广播设备，扫描，确认实时 RSSI、名称、系统 Peripheral UUID、Manufacturer / Service Data，验证名称 / RSSI / 服务筛选、收藏和扫描超时。确保历史时间可区分当前设备。
@@ -25,3 +25,13 @@
 - Inspector、Capture 和历史详情分别生成日志 TXT / 诊断结果 TXT；“分享 / 保存到文件”中选择存储到文件，确认可用系统文件 App 打开。
 - 改变隐私开关后旧分享入口应清除，新文件按当前选项生成。
 - 主屏幕显示深蓝色蓝牙放大镜 App 图标；确认版本 1.1。
+
+## 1.2 验收
+
+- iPhone 升级到 iOS 26+，用 Xcode 26+ 打开工程，确认最低部署版本 26.0。
+- 检查底部 Tab、导航、诊断状态卡及主操作按钮的原生 Liquid Glass；深 / 浅色均可读。
+- 开启设置 → 辅助功能 → 显示与文字大小 → 降低透明度，状态卡应使用实色，日志文字仍清晰。
+- Analysis 点击历史进入详情；列表左划点删除，取消不应改动数据，确认应移除历史与 App 内导出副本。
+- 详情垃圾桶确认删除后返回列表；比较选择自动失效；当前快照分享入口不应继续引用删除记录。
+- 当前录制及暂停会话禁止删除，结束后可删除；删除其他历史不应中断当前录制。
+- 删除后重新启动 App，历史不应复活；已另存到 App 外的文件仍保留。

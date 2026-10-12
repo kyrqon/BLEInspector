@@ -42,7 +42,7 @@ struct DevicesView: View {
             List {
                 Section {
                     Text(model.bluetoothState); Text(model.status).foregroundStyle(.secondary)
-                    Button(model.scanning ? "停止扫描":"扫描附近 BLE") { if model.scanning { model.stopScan() } else { model.scan() } }
+                    Button(model.scanning ? "停止扫描":"扫描附近 BLE") { if model.scanning { model.stopScan() } else { model.scan() } }.buttonStyle(.glass)
                 }
                 Section("筛选") {
                     TextField("广播 Service UUID",text:$serviceFilter).textInputAutocapitalization(.never)
@@ -80,7 +80,7 @@ struct DeviceDetail: View {
                     Button {
                         if model.connect(d,automatic:true) { onOpenInspector() }
                     } label: { Label(model.activeDeviceID == deviceID ? "查看 / 继续自动诊断":"开始一键自动诊断",systemImage:"waveform.path.ecg") }
-                    .buttonStyle(.borderedProminent).disabled(model.disconnecting)
+                    .buttonStyle(.glassProminent).disabled(model.disconnecting)
                     .accessibilityHint("开始只读诊断并打开进度页面")
                     Button("连接：专业调试") { if model.connect(d,automatic:false) { onOpenInspector() } }.disabled(model.disconnecting)
                 }
@@ -190,6 +190,7 @@ struct AnalysisView: View {
     @State private var baselineEnd = Date().addingTimeInterval(-300)
     @State private var changedStart = Date().addingTimeInterval(-300)
     @State private var changedEnd = Date()
+    @State private var pendingDeletion: SessionRecord?
     var body: some View {
         NavigationStack {
             List {
@@ -203,9 +204,42 @@ struct AnalysisView: View {
                 }
                 Section("诊断历史与报告") {
                     if model.history.isEmpty { Text("开始并结束一次录制后，会话将显示在这里。") }
-                    ForEach(model.history) { r in NavigationLink { SessionView(model:model,record:r) } label: { VStack(alignment:.leading) { Text(r.device?.name ?? "扫描会话"); Text(r.started,format:.dateTime).font(.caption); Text(r.note).font(.caption) } } }
+                    ForEach(model.history) { r in
+                        NavigationLink { SessionView(model:model,record:r) } label: {
+                            VStack(alignment:.leading,spacing:4) {
+                                Text(r.device?.name ?? "扫描会话")
+                                Text(r.started,format:.dateTime).font(.caption)
+                                if !r.note.isEmpty { Text(r.note).font(.caption).foregroundStyle(.secondary) }
+                                if !model.canDeleteSession(r.id) { Text("录制中 · 结束录制后可删除").font(.caption).foregroundStyle(.orange) }
+                                if model.deletingSessionIDs.contains(r.id) { ProgressView("正在删除…") }
+                            }
+                        }
+                        .disabled(model.deletingSessionIDs.contains(r.id))
+                        .swipeActions(edge:.trailing,allowsFullSwipe:false) {
+                            Button(role:.destructive) { pendingDeletion = r } label: { Label("删除",systemImage:"trash") }
+                                .disabled(!model.canDeleteSession(r.id) || model.deletingSessionIDs.contains(r.id))
+                        }
+                    }
+                    if !model.history.isEmpty { Text("点击查看详情，向左滑动删除。原始日志和 App 内导出副本会一起清理。").font(.caption).foregroundStyle(.secondary) }
                 }
             }.navigationTitle("Analysis").refreshable { await model.refreshHistory() }
+            .confirmationDialog("删除诊断会话？",isPresented:Binding(get:{ pendingDeletion != nil },set:{ if !$0 { pendingDeletion = nil } }),titleVisibility:.visible,presenting:pendingDeletion) { record in
+                Button("删除会话及 App 内导出副本",role:.destructive) {
+                    Task {
+                        if await model.deleteSession(record.id) {
+                            if first == record.id { first = nil; result = "基线会话已删除，请重新选择" }
+                            if second == record.id { second = nil; result = "比较会话已删除，请重新选择" }
+                        }
+                    }
+                }
+                Button("取消",role:.cancel) { }
+            } message: { record in
+                Text("将永久删除 \(record.started.formatted()) 的原始日志、诊断结果和 App 内导出副本。已保存到其他位置的文件不会被删除。")
+            }
+            .onChange(of:model.history.map(\.id)) { _, ids in
+                if let id = first, !ids.contains(id) { first = nil; result = "会话已删除，请重新选择" }
+                if let id = second, !ids.contains(id) { second = nil; result = "会话已删除，请重新选择" }
+            }
         }
     }
     func compare() {
@@ -217,8 +251,8 @@ struct AnalysisView: View {
                 let text = await Task.detached(priority:.utility) { x.comparing(to:y).map { d in
                     "\(d.key)\n帧数 \(d.baselineSamples) → \(d.changedSamples)\n频率 \(d.baselineHz.map { String(format:"%.2f",$0) } ?? "未知") → \(d.changedHz.map { String(format:"%.2f",$0) } ?? "未知") Hz\n末帧差异偏移 \(d.latestChangedOffsets)\n" + d.changedPeriod.facts.joined(separator:"\n") + "\n推测：" + d.changedPeriod.hypotheses.joined(separator:"；")
                 }.joined(separator:"\n\n") }.value
-                result = text.isEmpty ? "没有数据帧":text
-            } catch { result = error.localizedDescription }; working = false
+                if first == a && second == b { result = text.isEmpty ? "没有数据帧":text }
+            } catch { if first == a && second == b { result = error.localizedDescription } }; working = false
         }
     }
 }
@@ -227,6 +261,8 @@ struct SessionView: View {
     let record: SessionRecord
     @State private var summary = ""
     @State private var historySamples: [BLEEvent] = []
+    @State private var confirmDeletion = false
+    @Environment(\.dismiss) private var dismiss
     var body: some View {
         Form {
             Section("会话") { Text(record.id.uuidString); Text(record.note); Text(record.started,format:.dateTime); Text("服务数：\(record.topology.count)") }
@@ -235,7 +271,22 @@ struct SessionView: View {
                 ForEach(Array(historySamples.suffix(80).reversed())) { e in VStack(alignment:.leading) { Text(e.timestamp,format:.dateTime).font(.caption); Text(e.characteristicUUID ?? "").font(.caption.monospaced()); Text(e.rawHexPayload).font(.caption.monospaced()).textSelection(.enabled) } }
             }
             Section("数据统计与启发式分析") { Text(summary).font(.caption).textSelection(.enabled) }
-        }.navigationTitle("会话报告").task {
+        }.navigationTitle("会话报告")
+        .toolbar {
+            ToolbarItem(placement:.topBarTrailing) {
+                Button(role:.destructive) { confirmDeletion = true } label: { Label("删除会话",systemImage:"trash") }
+                    .disabled(!model.canDeleteSession(record.id) || model.deletingSessionIDs.contains(record.id))
+            }
+        }
+        .confirmationDialog("删除诊断会话？",isPresented:$confirmDeletion,titleVisibility:.visible) {
+            Button("删除会话及 App 内导出副本",role:.destructive) {
+                Task { if await model.deleteSession(record.id) { dismiss() } }
+            }
+            Button("取消",role:.cancel) { }
+        } message: {
+            Text("会话原始日志及 App 内导出副本将永久删除。请先分享需要保留的文件。")
+        }
+        .task {
             do {
                 historySamples = try await model.store.samples(record.id)
                 let analysis = try await model.store.analysis(record.id)
@@ -257,7 +308,7 @@ struct SettingsView: View {
             Section("扫描与连接") { Slider(value:$model.scanSeconds,in:5 ... 120,step:5); Text("扫描超时：\(Int(model.scanSeconds)) 秒"); Toggle("自动诊断订阅 Notify / Indicate",isOn:$model.autoSubscribe); Toggle("收藏设备意外断线后重连（最多 2 次）",isOn:$model.reconnectFavorites) }
             Section("Profile") { ForEach(model.profiles) { Text($0.name) }; Button("导入 Profile JSON") { importing = true }; Text("只匹配名称与提示已观察 UUID；不含任何车辆控制命令。") }
             Section("能力边界") { Text("仅访问本 App 连接设备提供的 GATT。不能抓取 BLE 链路层、其他 App 的全部蓝牙通信或完整经典蓝牙数据；真实 MAC 地址不可获取；加密 / 私有协议不保证能理解。所有日志仅本地保存。保持前台以持续采集。") }
-            Section("存储与版本") { Text("每会话最多 64 个约 4 MiB 分段；达到上限停止录制并提示。UI 最近 500 条；分析按完整会话增量统计（最多 4096 个特征实例，重复模式索引最多 1024 种）；导出流式读取完整会话。总日志空间达到约 1 GiB 停止录制。历史文件请通过 iOS 文件 App 管理删除。导出副本也需手动删除。"); Text("BLE Inspector 1.1 · iOS 17+") }
+            Section("存储与版本") { Text("每会话最多 64 个约 4 MiB 分段；达到上限停止录制并提示。UI 最近 500 条；分析按完整会话增量统计（最多 4096 个特征实例，重复模式索引最多 1024 种）；导出流式读取完整会话。总日志空间达到约 1 GiB 停止录制。历史列表左划或详情右上角可删除会话，同时清理 App 内导出副本。正在录制的会话需先结束。"); Text("BLE Inspector 1.2 · iOS 26+") }
         }.navigationTitle("Settings").fileImporter(isPresented:$importing,allowedContentTypes:[.json]) { result in
             do { let url = try result.get(); let scoped = url.startAccessingSecurityScopedResource(); defer { if scoped { url.stopAccessingSecurityScopedResource() } }; let size = try url.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? 0; guard size <= 262144 else { throw NSError(domain:"Profile",code:1,userInfo:[NSLocalizedDescriptionKey:"Profile 文件超过 256 KiB"]) }; try model.importProfiles(Data(contentsOf:url)) } catch { model.errorMessage = error.localizedDescription }
         } }
@@ -278,7 +329,18 @@ struct DiagnosticStatusView: View {
             Text("服务 \(model.services.count) · 特征 \(model.services.flatMap(\.characteristics).count) · 已录制事件 \(model.recordedEventCount)").font(.caption).foregroundStyle(.secondary)
             if model.recording { Label(model.paused ? "录制已暂停":"正在录制到本机",systemImage:model.paused ? "pause.circle":"record.circle").font(.caption).foregroundStyle(model.paused ? Color.orange:Color.green) }
             if model.diagnostic.state == .collecting && model.autoDiagnostic { Text("诊断已启动。通知监听会持续进行，完成后可停止并分享；无数据到达时也会保留连接和操作日志。").font(.caption).foregroundStyle(.secondary) }
-        }.padding(.vertical,4)
+        }.padding(16).modifier(InspectorGlassPanel())
+    }
+}
+
+private struct InspectorGlassPanel: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            content.background(Color(uiColor:.secondarySystemBackground),in:RoundedRectangle(cornerRadius:20,style:.continuous))
+        } else {
+            content.glassEffect(.regular,in:RoundedRectangle(cornerRadius:20,style:.continuous))
+        }
     }
 }
 
@@ -300,7 +362,7 @@ struct SessionExportPanel: View {
                     Button { generate(.text) } label: { Label("日志 TXT",systemImage:"doc.text") }
                     Spacer()
                     Button { generate(.reportText) } label: { Label("诊断结果 TXT",systemImage:"doc.text.magnifyingglass") }
-                }.disabled(preparing)
+                }.buttonStyle(.glass).disabled(preparing)
                 Menu("更多导出格式") {
                     ForEach(ExportFormat.allCases,id:\.rawValue) { format in Button(format.displayName) { generate(format) } }
                 }.disabled(preparing)
@@ -308,7 +370,7 @@ struct SessionExportPanel: View {
                 if let url = exportURL {
                     Text("已生成：\(generatedName)").font(.caption).foregroundStyle(.green)
                     ShareLink(item:url) { Label("分享 / 保存到文件",systemImage:"square.and.arrow.up") }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.glassProminent)
                     Text("在系统分享菜单选择“存储到文件”，即可保存到本机或 iCloud Drive。").font(.caption).foregroundStyle(.secondary)
                 }
                 Text(record == nil && model.recording ? "导出当前录制快照，采集继续进行。原始二进制可能包含身份信息，分享前请检查。":"导出已保存会话。原始二进制可能包含身份信息，分享前请检查。").font(.caption).foregroundStyle(.secondary)
@@ -328,7 +390,10 @@ struct SessionExportPanel: View {
                 if let record { exportURL = try await model.store.export(record,format:format,privacy:privacy) }
                 else { exportURL = try await model.exportCurrent(format:format,privacy:privacy) }
                 generatedName = format.displayName
-            } catch { model.errorMessage = error.localizedDescription }
+            } catch {
+                let expectedDeletion = (error as NSError).domain == "LogStore" && (error as NSError).code == 6
+                if !expectedDeletion && record.map({ model.deletingSessionIDs.contains($0.id) }) != true { model.errorMessage = error.localizedDescription }
+            }
             preparing = false
         }
     }

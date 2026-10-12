@@ -22,6 +22,7 @@ final class BluetoothCentralManager: NSObject, ObservableObject, @preconcurrency
     @Published var paused = false
     @Published var current: SessionRecord?
     @Published var history: [SessionRecord] = []
+    @Published private(set) var deletingSessionIDs = Set<UUID>()
     @Published var errorMessage: String?
     @Published var scanSeconds = 20.0 { didSet { defaults.set(scanSeconds, forKey: "scanSeconds") } }
     @Published var autoSubscribe = true { didSet { defaults.set(autoSubscribe, forKey: "autoSubscribe") } }
@@ -85,6 +86,22 @@ final class BluetoothCentralManager: NSObject, ObservableObject, @preconcurrency
         let loaded = try DeviceProfileRepository.load(data); profiles = loaded; defaults.set(data,forKey:"profiles")
     }
     func refreshHistory() async { do { let h = try await store.history(); await MainActor.run { self.history = h } } catch { await MainActor.run { self.errorMessage = error.localizedDescription } } }
+    func canDeleteSession(_ id: UUID) -> Bool {
+        SessionDeletionPolicy.canDelete(id,recordingSessionID:recording ? current?.id:nil)
+    }
+    @discardableResult
+    func deleteSession(_ id: UUID) async -> Bool {
+        guard canDeleteSession(id) else { errorMessage = "该会话仍在录制，请先结束录制后再删除"; return false }
+        guard !deletingSessionIDs.contains(id) else { return false }
+        deletingSessionIDs.insert(id); defer { deletingSessionIDs.remove(id) }
+        do {
+            try await store.deleteSession(id,preservingActiveSession:recording ? current?.id:nil)
+            if current?.id == id { current = nil; recordedEventCount = 0; pendingRecordedEvents = 0 }
+            events.removeAll { $0.sessionID == id }; eventBuffer.removeAll { $0.sessionID == id }
+            history.removeAll { $0.id == id }; await refreshHistory()
+            return true
+        } catch { errorMessage = "删除失败：\(error.localizedDescription)"; return false }
+    }
     private func publishEvents() {
         guard dirtyUI || !pendingValues.isEmpty else { return }; dirtyUI = false
         if !pendingValues.isEmpty {

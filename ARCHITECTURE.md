@@ -24,3 +24,9 @@ JSON / JSONL / CSV 完整事件采用固定大小读块逐行处理；读取首�
 ## 扩展点
 
 Profile 是无命令数据配置，未来可扩展 SIG 字典、标准特征解码器、特征实例级跨会话匹配、独立 BLETransport Mock、增量大日志分析和用户授权写入。新日志按 Service UUID / Characteristic UUID / characteristicInstanceID 区分重复实例。实例 ID 含发现序号，跨会话顺序可能改变，因此对应关系需要人工核实。旧日志缺少实例 ID 时仍按 UUID 聚合。ReadOnlyDiagnosticPlanner 为实际硬件层生成仅 Read / Subscribe 的操作计划，并由 Mock BLE 测试验证不对仅 Write 特征生成指令。完整 Central / Peripheral 委托集成仍需 iOS 硬件验证。
+
+## 1.2 平台与历史删除
+
+App / Test Target 最低 iOS 26，使用 Xcode 26 SwiftUI 原生 Liquid Glass。独立 Foundation 核心包仍可在 Linux / macOS 测试，不调用玻璃 API。状态卡遵循 accessibilityReduceTransparency；日志保持原生可读文本。
+
+SessionDeletionPolicy 保护当前正在录制（含暂停）会话。删除在写盘队列标记 UUID 墓碑、丢弃目标待写缓冲，然后在读取队列清理目录及匹配导出副本；正在读取的目标会话会在下一个块边界取消，失败导出自动清理。墓碑阻止迟到 save / append 重建删除会话。读写其他会话不受删除影响。清理完成重新检查容量，ViewModel 同步清空当前会话引用和目标日志窗口。

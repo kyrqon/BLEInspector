@@ -374,3 +374,8 @@ extension DiagnosticState {
         }
     }
 }
+
+
+enum SessionDeletionPolicy {
+    static func canDelete(_ id: UUID, recordingSessionID: UUID?) -> Bool { id != recordingSessionID }
+}
