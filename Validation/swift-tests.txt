@@ -1,0 +1,81 @@
+warning: /home/agent/.swiftpm/configuration is not accessible or not writable, disabling user-level cache features.
+warning: /home/agent/.swiftpm/security is not accessible or not writable, disabling user-level cache features.
+Building for debugging...
+[0/5] Write sources
+[2/5] Write swift-version--2FF03D6BD3A85A29.txt
+[4/7] Emitting module BLEInspectorCore
+[5/7] Compiling BLEInspectorCore Core.swift
+[6/8] Compiling BLEInspectorCore Storage.swift
+[7/9] Wrapping AST for BLEInspectorCore for debugging
+[9/17] Compiling BLEInspectorCoreTests CoreTests.swift
+[10/17] Emitting module BLEInspectorCoreTests
+[11/18] /workspace/BLEInspector/.build/x86_64-unknown-linux-gnu/debug/BLEInspectorCorePackageDiscoveredTests.derived/all-discovered-tests.swift
+[12/19] Write sources
+[13/19] Wrapping AST for BLEInspectorCoreTests for debugging
+[15/22] Emitting module BLEInspectorCorePackageDiscoveredTests
+[16/22] Compiling BLEInspectorCorePackageDiscoveredTests BLEInspectorCoreTests.swift
+[17/22] Compiling BLEInspectorCorePackageDiscoveredTests all-discovered-tests.swift
+[18/23] /workspace/BLEInspector/.build/x86_64-unknown-linux-gnu/debug/BLEInspectorCorePackageTests.derived/runner.swift
+[19/24] Write sources
+[20/24] Wrapping AST for BLEInspectorCorePackageDiscoveredTests for debugging
+[22/26] Emitting module BLEInspectorCorePackageTests
+[23/26] Compiling BLEInspectorCorePackageTests runner.swift
+[24/26] Write Objects.LinkFileList
+[25/26] Linking BLEInspectorCorePackageTests.xctest
+Build complete! (30.58s)
+Test Suite 'All tests' started at 2026-10-12 01:57:31.295
+Test Suite 'debug.xctest' started at 2026-10-12 01:57:31.297
+Test Suite 'CoreTests' started at 2026-10-12 01:57:31.297
+Test Case 'CoreTests.testAdvertisementSerialization' started at 2026-10-12 01:57:31.297
+Test Case 'CoreTests.testAdvertisementSerialization' passed (0.002 seconds)
+Test Case 'CoreTests.testCSVQuoteNewline' started at 2026-10-12 01:57:31.298
+Test Case 'CoreTests.testCSVQuoteNewline' passed (0.002 seconds)
+Test Case 'CoreTests.testChecksumHintsAreUnconfirmed' started at 2026-10-12 01:57:31.300
+Test Case 'CoreTests.testChecksumHintsAreUnconfirmed' passed (0.001 seconds)
+Test Case 'CoreTests.testDiffLengthAndOffsets' started at 2026-10-12 01:57:31.301
+Test Case 'CoreTests.testDiffLengthAndOffsets' passed (0.0 seconds)
+Test Case 'CoreTests.testEmptyAnalysisAndEndian' started at 2026-10-12 01:57:31.302
+Test Case 'CoreTests.testEmptyAnalysisAndEndian' passed (0.0 seconds)
+Test Case 'CoreTests.testEmptyPayloadAndInvalidBase64' started at 2026-10-12 01:57:31.302
+Test Case 'CoreTests.testEmptyPayloadAndInvalidBase64' passed (0.004 seconds)
+Test Case 'CoreTests.testExportPrivacy' started at 2026-10-12 01:57:31.306
+Test Case 'CoreTests.testExportPrivacy' passed (0.005 seconds)
+Test Case 'CoreTests.testExportSnapshotWhileRecordingContinues' started at 2026-10-12 01:57:31.310
+Test Case 'CoreTests.testExportSnapshotWhileRecordingContinues' passed (0.31 seconds)
+Test Case 'CoreTests.testHexAndBase64' started at 2026-10-12 01:57:31.620
+Test Case 'CoreTests.testHexAndBase64' passed (0.0 seconds)
+Test Case 'CoreTests.testMockDiagnosticStateMachine' started at 2026-10-12 01:57:31.621
+Test Case 'CoreTests.testMockDiagnosticStateMachine' passed (0.0 seconds)
+Test Case 'CoreTests.testNotificationStateSurvivesPrivacyRedaction' started at 2026-10-12 01:57:31.621
+Test Case 'CoreTests.testNotificationStateSurvivesPrivacyRedaction' passed (0.004 seconds)
+Test Case 'CoreTests.testNotificationStatisticsAndHeuristics' started at 2026-10-12 01:57:31.625
+Test Case 'CoreTests.testNotificationStatisticsAndHeuristics' passed (0.001 seconds)
+Test Case 'CoreTests.testPayloadRedactionAlsoRemovesAdvertisementText' started at 2026-10-12 01:57:31.626
+Test Case 'CoreTests.testPayloadRedactionAlsoRemovesAdvertisementText' passed (0.008 seconds)
+Test Case 'CoreTests.testProfileLoadAndNoInventedUUID' started at 2026-10-12 01:57:31.634
+Test Case 'CoreTests.testProfileLoadAndNoInventedUUID' passed (0.001 seconds)
+Test Case 'CoreTests.testReadOnlyDiagnosticPlannerWithMockBLE' started at 2026-10-12 01:57:31.635
+Test Case 'CoreTests.testReadOnlyDiagnosticPlannerWithMockBLE' passed (0.001 seconds)
+Test Case 'CoreTests.testRepeatedUUIDInstancesStaySeparate' started at 2026-10-12 01:57:31.635
+Test Case 'CoreTests.testRepeatedUUIDInstancesStaySeparate' passed (0.001 seconds)
+Test Case 'CoreTests.testRotationAndExports' started at 2026-10-12 01:57:31.636
+Test Case 'CoreTests.testRotationAndExports' passed (0.018 seconds)
+Test Case 'CoreTests.testRotationLimitAndCorruptLog' started at 2026-10-12 01:57:31.655
+Test Case 'CoreTests.testRotationLimitAndCorruptLog' passed (0.081 seconds)
+Test Case 'CoreTests.testSIGUUIDNormalization' started at 2026-10-12 01:57:31.735
+Test Case 'CoreTests.testSIGUUIDNormalization' passed (0.0 seconds)
+Test Case 'CoreTests.testSerializationContextAndBinary' started at 2026-10-12 01:57:31.736
+Test Case 'CoreTests.testSerializationContextAndBinary' passed (0.001 seconds)
+Test Case 'CoreTests.testSessionDiffFrequency' started at 2026-10-12 01:57:31.737
+Test Case 'CoreTests.testSessionDiffFrequency' passed (0.0 seconds)
+Test Case 'CoreTests.testStreamingFullSessionAndEarlyTimeRange' started at 2026-10-12 01:57:31.737
+Test Case 'CoreTests.testStreamingFullSessionAndEarlyTimeRange' passed (7.274 seconds)
+Test Suite 'CoreTests' passed at 2026-10-12 01:57:39.011
+	 Executed 22 tests, with 0 failures (0 unexpected) in 7.714 (7.714) seconds
+Test Suite 'debug.xctest' passed at 2026-10-12 01:57:39.011
+	 Executed 22 tests, with 0 failures (0 unexpected) in 7.714 (7.714) seconds
+Test Suite 'All tests' passed at 2026-10-12 01:57:39.011
+	 Executed 22 tests, with 0 failures (0 unexpected) in 7.714 (7.714) seconds
+◇ Test run started.
+↳ Testing Library Version: 6.0.3 (18c42c19cac3faf)
+✔ Test run with 0 tests passed after 0.001 seconds.

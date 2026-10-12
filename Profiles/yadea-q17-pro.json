@@ -1,0 +1,15 @@
+[
+  {
+    "id": "yadea-q17-pro",
+    "name": "雅迪 Q17 Pro",
+    "deviceName": "YD61236288",
+    "services": [
+      "E7810B92-73AE-499D-8C15-FAA9AEF0C3F2"
+    ],
+    "characteristicPrefixes": [
+      "BEF8E7E0",
+      "BEF8E7E1"
+    ],
+    "manufacturerObservation": "_Newbit Studio（实际设备观察，协议未确认）"
+  }
+]

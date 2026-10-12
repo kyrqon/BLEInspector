@@ -1,0 +1,18 @@
+# Mac + iPhone 验收清单
+
+以下是待执行步骤，不是已通过记录。
+
+1. Xcode 16+ 打开 BLEInspector.xcodeproj，选择 BLEInspector Scheme。
+2. 配置 App / Test Target 的 Personal Team 和唯一 Bundle Identifier。选择实际 iPhone，⌘B 构建，⌘U 测试；记录 Xcode / iOS 版本与错误。Linux 核心包测试没有验证 SwiftUI 或 CoreBluetooth SDK 类型检查。
+3. 按 README 打开 iPhone 开发者模式并安装，确认 App 首次蓝牙授权提示，拒绝授权时正确提示而不崩溃；再在设置允许。
+4. 开启 BLE 广播设备，扫描，确认实时 RSSI、名称、系统 Peripheral UUID、Manufacturer / Service Data，验证名称 / RSSI / 服务筛选、收藏和扫描超时。确保历史时间可区分当前设备。
+5. 选择通用标准 BLE 外设自动诊断。核对服务、Included Services、完整特征 UUID、属性及描述符。核对无权限读取错误、Notify 状态及持续 value 日志。没有 Read / Notify 的特征不应调用对应操作。
+6. 专业模式连接后，确认不会自动 Read / Subscribe；手动操作仅对相应属性启用。与 nRF Connect 结果对照，注意 Notify 订阅会设置 CCCD。
+7. 开始录制，暂停时仍可看屏幕值但文件不增加数据事件；恢复、标记、结束、重新启动 App 后历史仍可浏览。两会话 / 时间段比较应显示可复核的帧数、频率和字节偏移。
+8. 分别导出 JSON、JSONL、CSV、Markdown。通过系统分享发到 Mac。用 Python 的 json / csv 标准解析器检查；JSONL 首行 context 的 Base64 解码为 UTF-8 JSON，后续每行有完整事件字段。
+9. 检查隐私选项：设备 UUID、名称、备注与自由文字已隐藏；选择移除 Payload 后，原始二进制与拓扑最近值不应泄露。原始本地日志保留，导出副本另存。
+10. 测试断开、关蓝牙、外设掉电、连接失败和 15 / 45 / 8 秒超时。关闭自动重连时不重试；开启收藏自动重连时最多两次；停止诊断不应重连。
+11. 使用 YD61236288 核对 Profile 提示及实际完整 UUID；不能仅由前缀推断。车辆操作由用户手动完成，App 不含任何 Write 指令。
+12. 测试深色 / 浅色、大字体、VoiceOver 和较高频通知。长时间压力测试要确认日志分段、内存窗口、磁盘错误提示和后台暂停提示。录制上限可用核心单元测试验证；不要在现场用未知指令制造通知负载。
+
+已知限制：字节分析前 512 字节、模式索引 1024 种、最多 4096 个实例；跨会话实例发现顺序需人工核实；没有后台连续采集；免费签名可能需定期重装；Xcode 未来版本可能需 SDK 适配。若真机验收发现编译或行为缺陷，应提供原始 Xcode 错误 / JSONL 继续修复。
